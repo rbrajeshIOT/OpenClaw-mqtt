@@ -1,0 +1,172 @@
+Perfect — let’s create a single step-by-step sequence to get everything running, from detection → MQTT → OpenClaw → Telegram alert. This will give you a working test with your first camera.
+
+Full Setup & Test Sequence
+
+Assume your RTSP URL is rtsp://USER:PASSWORD@CAMERA_IP:554/stream.
+
+Step 0 — Activate your Python environment
+# Go to vision folder
+cd ~/vision
+
+# Activate venv
+source venv/bin/activate
+Step 1 — Ensure required packages
+pip install ultralytics opencv-python paho-mqtt
+Step 2 — Create detection script
+nano detect_person.py
+
+Paste:
+
+from ultralytics import YOLO
+import cv2, time, os, subprocess
+from datetime import datetime
+import paho.mqtt.client as mqtt
+import json
+
+CAMERA_NAME = "front_door"
+RTSP_URL = "rtsp://USER:PASSWORD@CAMERA_IP:554/stream"  # replace
+
+SNAPSHOT_DIR = "snapshots"
+os.makedirs(SNAPSHOT_DIR, exist_ok=True)
+
+ALERT_COOLDOWN = 30
+last_alert_time = 0
+
+MQTT_BROKER = "localhost"
+MQTT_TOPIC = f"home/camera/{CAMERA_NAME}/person"
+
+MODEL = YOLO("yolov8n.pt")
+
+def publish_event(image_path, confidence):
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    client.connect(MQTT_BROKER, 1883, 60)
+    payload = {
+        "camera": CAMERA_NAME,
+        "event": "person_detected",
+        "confidence": confidence,
+        "image": os.path.abspath(image_path),
+        "timestamp": datetime.now().isoformat()
+    }
+    client.publish(MQTT_TOPIC, json.dumps(payload))
+    client.disconnect()
+
+cap = cv2.VideoCapture(RTSP_URL, cv2.CAP_FFMPEG)
+
+if not cap.isOpened():
+    print("❌ Cannot open RTSP stream")
+    exit()
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        print("Failed to grab frame")
+        time.sleep(1)
+        continue
+
+    results = MODEL(frame, verbose=False)
+
+    for r in results:
+        for box in r.boxes:
+            cls = int(box.cls[0])
+            label = MODEL.names[cls]
+            confidence = float(box.conf[0])
+            if label == "person" and confidence > 0.6:
+                now = time.time()
+                if now - last_alert_time > ALERT_COOLDOWN:
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    image_path = f"{SNAPSHOT_DIR}/{CAMERA_NAME}_{timestamp}.jpg"
+                    cv2.imwrite(image_path, frame)
+                    print(f"Person detected! Saved {image_path}")
+                    publish_event(image_path, confidence)
+                    last_alert_time = now
+    time.sleep(0.1)
+
+Save and exit.
+
+Step 3 — Create OpenClaw MQTT listener
+cd ~/device_manager
+nano mqtt_listener.py
+
+Paste:
+
+import paho.mqtt.client as mqtt
+import json
+import subprocess
+
+BROKER = "localhost"
+TOPIC = "home/camera/+/person"
+
+def on_message(client, userdata, msg):
+    data = json.loads(msg.payload.decode())
+    image = data["image"]
+    camera = data["camera"]
+    subprocess.run([
+        "openclaw",
+        "message",
+        "send",
+        "--channel", "telegram",
+        "--message", f"🚨 Person detected on {camera}",
+        "--media", image
+    ])
+
+client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+client.connect(BROKER, 1883, 60)
+client.subscribe(TOPIC)
+client.on_message = on_message
+
+print("Listening for camera events...")
+client.loop_forever()
+
+Save and exit.
+
+Step 4 — Test MQTT independently
+
+Open a terminal:
+
+mosquitto_sub -t "home/camera/#" -v
+
+Keep this running.
+
+Step 5 — Run detection script
+
+In another terminal:
+
+cd ~/vision
+source venv/bin/activate
+python detect_person.py
+
+Show a person in the camera
+
+You should see JSON appear in the mosquitto_sub terminal
+
+Step 6 — Run OpenClaw listener
+cd ~/device_manager
+source venv/bin/activate
+python mqtt_listener.py
+
+This will subscribe to MQTT events
+
+Any person detected → Telegram alert with snapshot
+
+Step 7 — Verify end-to-end
+
+Person appears on camera
+
+detect_person.py saves snapshot → publishes MQTT event
+
+mqtt_listener.py receives event → sends Telegram alert
+
+Check Telegram → snapshot received
+
+Step 8 — Optional — Run both in background
+# Detection
+nohup ~/vision/venv/bin/python ~/vision/detect_person.py > detect.log 2>&1 &
+
+# MQTT Listener
+nohup ~/device_manager/venv/bin/python ~/device_manager/mqtt_listener.py > listener.log 2>&1 &
+
+Check logs:
+
+tail -f detect.log listener.log
+
+✅ After this, you’ll have a fully working person-detection → MQTT → OpenClaw → Telegram pipeline.
