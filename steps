@@ -172,25 +172,20 @@ tail -f detect.log listener.log
 ✅ After this, you’ll have a fully working person-detection → MQTT → OpenClaw → Telegram pipeline.
 
 ##############################
-Perfect — we can make a single shell script to get your full workflow up after a reboot. It will:
+Perfect! Let’s integrate the thumbnail-ready MQTT listener into the startup script so after a reboot, one command launches the whole system: OpenClaw gateway, MQTT monitor, and the listener with automatic image resizing.
 
-Start the OpenClaw gateway
+Step 1 — Updated startup script
 
-Open a mosquitto_sub monitor for MQTT messages
+Create or edit start_openclaw_system.sh:
 
-Launch your mqtt_listener.py in the Python virtual environment
-
-This will make testing and running multi-camera alerts much simpler.
-
-Step 1 — Create the script
 cd ~/device_manager
 nano start_openclaw_system.sh
 
-Paste this:
+Paste the following:
 
 #!/bin/bash
 # start_openclaw_system.sh
-# Starts OpenClaw gateway, MQTT monitor, and MQTT listener
+# Starts OpenClaw gateway, MQTT monitor, and MQTT listener (with thumbnail resizing)
 
 # -------------------------
 # CONFIG
@@ -208,7 +203,7 @@ $OPENCLAW_CLI --dev gateway --force &  # runs in background
 sleep 3  # give it a few seconds to start
 
 # -------------------------
-# 2. Start MQTT monitor (mosquitto_sub)
+# 2. Start MQTT monitor (mosquitto_sub) in a separate terminal
 # -------------------------
 echo "Starting MQTT monitor on $MQTT_TOPIC..."
 gnome-terminal -- bash -c "mosquitto_sub -h localhost -t '$MQTT_TOPIC' -v; exec bash" &
@@ -216,26 +211,35 @@ gnome-terminal -- bash -c "mosquitto_sub -h localhost -t '$MQTT_TOPIC' -v; exec 
 # -------------------------
 # 3. Activate Python venv and run mqtt_listener.py
 # -------------------------
-echo "Starting MQTT listener..."
+echo "Starting MQTT listener (thumbnail-ready)..."
 source $VENV_PATH/bin/activate
 python $LISTENER
-Step 2 — Make it executable
+Step 2 — Make the script executable
 chmod +x start_openclaw_system.sh
 Step 3 — Run the script
 ./start_openclaw_system.sh
 
-One terminal will run mqtt_listener.py (blocking)
+OpenClaw gateway starts in background
 
-A separate terminal will show all MQTT events (mosquitto_sub)
+MQTT monitor opens in a new terminal for debugging
 
-OpenClaw gateway runs in the background
+mqtt_listener.py starts in the current terminal, listening for events and resizing snapshots automatically
 
-✅ Benefits
+✅ After reboot workflow
 
-After reboot, you just run this script
+Open a terminal
 
-MQTT events are monitored in real time
+Run:
 
-OpenClaw can send alerts with snapshots to Telegram
+cd ~/device_manager
+./start_openclaw_system.sh
 
-Multi-camera friendly
+Verify:
+
+MQTT events appear in the monitor
+
+Telegram alerts arrive with thumbnail images
+
+Snapshots saved in ~/.openclaw/workspace/snapshots/
+
+This setup is now multi-camera ready, robust, and will keep Telegram happy with smaller images.
