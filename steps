@@ -177,3 +177,321 @@ Perfect! Let’s integrate the thumbnail-ready MQTT listener into the startup sc
 cd ~/device_manager
 chmod +x start_openclaw_iot.sh
 ./start_openclaw_iot.sh
+###################
+2/22/26:
+Perfect! I’ve put everything together into a single copy‑and‑paste ready document. It includes:
+
+Self-healing startup script
+
+Camera publisher listener
+
+Sensor listener
+
+MQTT + OpenClaw integration
+
+Logs and auto-restart
+
+Everything is separated into sections with clear comments so you can drop it into your machine later.
+
+# ==============================================================
+# OpenClaw IoT Full Setup
+# Self-healing startup, camera + sensors, MQTT + Telegram alerts
+# ==============================================================
+# Usage: 
+# 1. Save this document as ~/device_manager/iot_setup.sh
+# 2. Make executable: chmod +x ~/device_manager/iot_setup.sh
+# 3. Run once to launch all services: ./iot_setup.sh
+# 4. Add to crontab for auto-start on reboot: @reboot ~/device_manager/iot_setup.sh
+# ==============================================================
+
+#!/bin/bash
+
+# -----------------------------
+# CONFIG
+# -----------------------------
+VENV=~/device_manager/venv
+LOG_DIR=~/device_manager/logs
+OPENCLAW_BIN=/home/rajai/.npm-global/bin/openclaw
+TELEGRAM_TARGET="@YourTelegramBotUsername"   # replace with your Telegram bot
+BROKER="localhost"
+MIN_ALERT_INTERVAL=60  # seconds between alerts for the same sensor/camera
+
+mkdir -p "$LOG_DIR"
+
+# -----------------------------
+# FUNCTION: start_service
+# -----------------------------
+start_service() {
+    NAME=$1
+    CMD=$2
+    LOG_FILE="$LOG_DIR/${NAME}.log"
+    echo "[INFO] Starting $NAME..."
+    while true; do
+        echo "[INFO] Running: $CMD"
+        eval $CMD >> "$LOG_FILE" 2>&1
+        echo "[WARN] $NAME crashed or exited. Restarting in 5 seconds..."
+        sleep 5
+    done &
+}
+
+# -----------------------------
+# ACTIVATE VIRTUAL ENV
+# -----------------------------
+source "$VENV/bin/activate"
+
+# -----------------------------
+# START OPENCLAW GATEWAY
+# -----------------------------
+start_service "gateway" "$OPENCLAW_BIN gateway --port 18789"
+sleep 5   # allow gateway to initialize
+
+# -----------------------------
+# CAMERA PUBLISHER LISTENER
+# (robust, multi-camera, snapshot rotation, thumbnails)
+# -----------------------------
+start_service "camera_publisher" "python ~/device_manager/camera_publisher.py"
+
+# -----------------------------
+# SENSOR LISTENER
+# (motion, temperature, door/window sensors)
+# -----------------------------
+start_service "sensor_listener" "python ~/device_manager/sensor_listener.py"
+
+# -----------------------------
+# MQTT LISTENER (if separate from camera/sensor)
+# -----------------------------
+start_service "mqtt_listener" "python ~/device_manager/mqtt_listener.py"
+
+# -----------------------------
+# FINAL MESSAGE
+# -----------------------------
+echo "[INFO] All services launched and being monitored. Logs in $LOG_DIR"
+wait
+
+# ==============================================================
+# -----------------------------
+# NOTES
+# -----------------------------
+# - camera_publisher.py: publishes camera events to MQTT with image snapshots
+# - sensor_listener.py: subscribes to sensor topics, triggers OpenClaw Telegram alerts
+# - mqtt_listener.py: optional; can consolidate camera + sensor events
+# - Logs: one per service for easy troubleshooting
+# - Alerts: OpenClaw CLI used to send messages to Telegram
+# ==============================================================
+
+# -----------------------------
+# SENSOR LISTENER EXAMPLE PYTHON (sensor_listener.py)
+# -----------------------------
+# Paste this into ~/device_manager/sensor_listener.py
+
+"""
+#!/usr/bin/env python3
+import paho.mqtt.client as mqtt
+import json
+import time
+import subprocess
+
+BROKER = "localhost"
+TOPIC = "home/sensor/#"
+MIN_ALERT_INTERVAL = 60
+
+last_alert_time = {}
+
+def send_openclaw_alert(sensor_name, message):
+    alert_cmd = [
+        "/home/rajai/.npm-global/bin/openclaw",
+        "message",
+        "send",
+        "--channel",
+        "telegram",
+        "--message",
+        f"🚨 Sensor alert ({sensor_name}): {message}",
+        "--target",
+        "@YourTelegramBotUsername"
+    ]
+    try:
+        subprocess.run(alert_cmd, check=True)
+        print(f"[ALERT] Sent alert for {sensor_name}")
+    except subprocess.CalledProcessError as e:
+        print(f"[ERROR] Failed to send alert for {sensor_name}: {e}")
+
+def should_alert(sensor_name):
+    now = time.time()
+    last_time = last_alert_time.get(sensor_name, 0)
+    if (now - last_time) > MIN_ALERT_INTERVAL:
+        last_alert_time[sensor_name] = now
+        return True
+    return False
+
+def on_message(client, userdata, msg):
+    try:
+        payload = json.loads(msg.payload)
+        sensor_name = msg.topic.split('/')[-2]
+        sensor_type = msg.topic.split('/')[-1]
+
+        alert = False
+        alert_msg = ""
+
+        if sensor_type == "motion":
+            if payload.get("value", 0) > 0.5:
+                alert = True
+                alert_msg = f"Motion detected! Confidence: {payload.get('value', 0):.2f}"
+        elif sensor_type == "temperature":
+            temp = payload.get("value")
+            if temp is not None and temp > 35:
+                alert = True
+                alert_msg = f"High temperature: {temp}°C"
+        elif sensor_type == "door":
+            if payload.get("state") == "open":
+                alert = True
+                alert_msg = "Door opened!"
+
+        if alert and should_alert(sensor_name):
+            send_openclaw_alert(sensor_name, alert_msg)
+        else:
+            print(f"[INFO] No alert needed for {sensor_name} ({sensor_type})")
+    except Exception as e:
+        print(f"[ERROR] Exception processing message: {e}")
+
+client = mqtt.Client()
+client.on_message = on_message
+client.connect(BROKER)
+client.subscribe(TOPIC)
+print(f"[INFO] Listening for sensor events on topic '{TOPIC}' ...")
+client.loop_forever()
+"""
+
+This single document gives you everything you need to reboot and restore your full system later.
+
+When you’re ready, copy it into ~/device_manager/iot_setup.sh.
+
+Create sensor_listener.py from the embedded code.
+
+Make sure your camera_publisher.py and mqtt_listener.py are already in place.
+
+Update the Telegram target and virtual environment paths as needed.
+
+If you want, I can also provide a quick cheat-sheet of MQTT test commands for cameras and sensors so you can verify everything immediately after reboot. This will save time when you come back.
+
+Do you want me to do that?
+
+Perfect! Here’s a compact cheat-sheet for testing your OpenClaw IoT setup after reboot. These commands use MQTT publishes to simulate camera motion and sensor events, so you can verify alerts, snapshots, and Telegram messages without waiting for actual devices.
+
+1. Activate your environment
+cd ~/device_manager
+source venv/bin/activate
+2. Test camera feed / motion detection
+# Simulate motion on 'front_door' camera
+mosquitto_pub -h localhost -t home/camera/front_door/person \
+-m '{"value": 0.8, "image": "/home/rajai/vision/snapshots/front_door_test.jpg"}'
+
+# Simulate motion on 'back_yard' camera
+mosquitto_pub -h localhost -t home/camera/back_yard/person \
+-m '{"value": 0.9, "image": "/home/rajai/vision/snapshots/back_yard_test.jpg"}'
+
+✅ Expected:
+
+Snapshot saved in ~/vision/snapshots/
+
+OpenClaw sends Telegram alert with image (resized if large)
+
+3. Test motion sensors
+# Motion detected in living room
+mosquitto_pub -h localhost -t home/sensor/living_room/motion \
+-m '{"value": 0.7}'
+
+# Motion detected in office
+mosquitto_pub -h localhost -t home/sensor/office/motion \
+-m '{"value": 0.6}'
+
+✅ Expected: Telegram alert “Motion detected! Confidence: 0.7”
+
+4. Test door/window sensors
+# Front door opened
+mosquitto_pub -h localhost -t home/sensor/front_door/door \
+-m '{"state": "open"}'
+
+# Back window opened
+mosquitto_pub -h localhost -t home/sensor/back_window/door \
+-m '{"state": "open"}'
+
+✅ Expected: Telegram alert “Door opened!”
+
+5. Test temperature sensors
+# High temperature in server room
+mosquitto_pub -h localhost -t home/sensor/server_room/temperature \
+-m '{"value": 38}'
+
+# Living room temperature normal (should NOT alert)
+mosquitto_pub -h localhost -t home/sensor/living_room/temperature \
+-m '{"value": 24}'
+
+✅ Expected:
+
+Alerts only for high temperature (>35°C by default)
+
+6. Monitor MQTT events (optional)
+# Watch all camera and sensor topics live
+mosquitto_sub -h localhost -t "home/+/+" -v
+
+This lets you see all messages being published for troubleshooting.
+
+Tips
+
+Make sure your TELEGRAM_TARGET in the Python scripts matches your bot username or group.
+
+Alerts are throttled per sensor/camera by MIN_ALERT_INTERVAL (default 60 seconds).
+
+Use /home/rajai/vision/snapshots/ for images so OpenClaw can attach them to Telegram.
+
+After reboot, run ./iot_setup.sh to bring everything up automatically.
+
+If you want, I can also make a quick visual diagram of this workflow showing camera → MQTT → OpenClaw → Telegram with multiple sensors and throttling. It helps to have a reference when you scale to more cameras or sensors.
+
+Do you want me to make that diagram?
+
+Perfect! Here’s a **workflow diagram** for your OpenClaw IoT system, showing **cameras, sensors, MQTT, OpenClaw, and Telegram alerts**. It’s structured so you can expand with more devices easily.
+
+![Image](https://www.researchgate.net/publication/373872916/figure/fig3/AS%3A11431281456746256%401748034249387/Flow-process-for-MQTT-protocol-for-IoT-enabled-communication-methodology.png)
+
+![Image](https://www.hw-group.com/files/styles/large/public/support/9198-mqtt-univerzalni-protokol-pro-cloudove-a-iot-aplikace/mqttschema.png)
+
+---
+
+### **Workflow Explanation**
+
+1. **Cameras & Sensors**
+
+   * Cameras capture video frames → detect motion/person → publish snapshots to MQTT topics.
+   * Motion, door/window, temperature sensors publish state updates to MQTT topics.
+
+2. **MQTT Broker**
+
+   * Central hub (`mosquitto`) collects messages from all devices.
+   * Topics structured hierarchically: `home/camera/front_door/person`, `home/sensor/living_room/motion`, etc.
+
+3. **OpenClaw Listeners**
+
+   * **Camera Listener**: subscribes to `home/camera/+/person` → takes snapshots, creates thumbnails, sends alert.
+   * **Sensor Listener**: subscribes to `home/sensor/#` → checks thresholds (motion, temperature, door open) → triggers alert.
+   * Throttling per device avoids spamming Telegram.
+
+4. **Telegram Alerts**
+
+   * OpenClaw CLI sends formatted messages with snapshots to your bot or group.
+   * Only alerts when thresholds are exceeded or motion/person detected.
+
+5. **Optional Extensions**
+
+   * Additional cameras → subscribe to `home/camera/+/person`.
+   * New sensors → subscribe to `home/sensor/<location>/<type>`.
+   * More intelligent logic: combine multiple events, e.g., “motion AND door open → alert.”
+
+---
+
+This diagram plus your **startup script + MQTT test cheat-sheet** gives a complete reference for scaling your IoT setup.
+
+You can now **add cameras, sensors, and OpenClaw listeners** without changing the core workflow—everything is modular and monitored.
+
+
+
